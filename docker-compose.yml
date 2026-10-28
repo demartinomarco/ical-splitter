@@ -1,9 +1,14 @@
 services:
   ical-splitter:
-    build:
-      context: .
+    image: ghcr.io/marcodemartino/ical-splitter:latest
+    pull_policy: always
     restart: unless-stopped
     environment:
       ADDR: ":8080"
+      FIRST_ICAL_URL: ""
+      SECOND_ICAL_URL: ""
+      FIRST_ENDPOINT_SECRET: ""
+      SECOND_ENDPOINT_SECRET: ""
+      REFRESH_INTERVAL: "10m"
     ports:
       - "127.0.0.1:8080:8080"

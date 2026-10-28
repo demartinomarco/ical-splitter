@@ -124,7 +124,7 @@ func (c *calendarCache) refreshLoop(ctx context.Context, client *http.Client, fi
 	}
 }
 
-func newHandler(cache *calendarCache) http.Handler {
+func newHandler(cache *calendarCache, firstEndpointSecret, secondEndpointSecret string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -156,10 +156,12 @@ func newHandler(cache *calendarCache) http.Handler {
 		}
 	})
 
+	// The first two paths contain secret tokens supplied through environment
+	// variables. The stable shared endpoint remains /shared.ics.
 	for path, name := range map[string]string{
-		"/first-only.ics":  "first-only",
-		"/second-only.ics": "second-only",
-		"/shared.ics":      "shared",
+		"/" + firstEndpointSecret + ".ics":  "first-only",
+		"/" + secondEndpointSecret + ".ics": "second-only",
+		"/shared.ics":                       "shared",
 	} {
 		calendarName := name
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +206,18 @@ func run() error {
 		return fmt.Errorf("SECOND_ICAL_URL: %w", err)
 	}
 
+	firstEndpointSecret := strings.TrimSpace(os.Getenv("FIRST_ENDPOINT_SECRET"))
+	secondEndpointSecret := strings.TrimSpace(os.Getenv("SECOND_ENDPOINT_SECRET"))
+	if err := validateEndpointSecret(firstEndpointSecret); err != nil {
+		return fmt.Errorf("FIRST_ENDPOINT_SECRET: %w", err)
+	}
+	if err := validateEndpointSecret(secondEndpointSecret); err != nil {
+		return fmt.Errorf("SECOND_ENDPOINT_SECRET: %w", err)
+	}
+	if firstEndpointSecret == secondEndpointSecret {
+		return errors.New("FIRST_ENDPOINT_SECRET and SECOND_ENDPOINT_SECRET must be different")
+	}
+
 	interval := 10 * time.Minute
 	if value := strings.TrimSpace(os.Getenv("REFRESH_INTERVAL")); value != "" {
 		parsed, err := time.ParseDuration(value)
@@ -225,7 +239,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           newHandler(cache),
+		Handler:           newHandler(cache, firstEndpointSecret, secondEndpointSecret),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -249,6 +263,22 @@ func validateFeedURL(address string) error {
 	parsed, err := url.ParseRequestURI(address)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
 		return errors.New("must be an absolute http:// or https:// URL")
+	}
+	return nil
+}
+
+// validateEndpointSecret restricts each secret to a single URL-safe path
+// segment. Requiring at least 32 characters encourages high-entropy tokens.
+func validateEndpointSecret(secret string) error {
+	if len(secret) < 32 || len(secret) > 128 {
+		return errors.New("must be 32-128 characters using only letters, digits, '-' or '_'; generate one with 'openssl rand -hex 32'")
+	}
+	for _, char := range secret {
+		if !((char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '_') {
+			return errors.New("must use only letters, digits, '-' or '_'; generate one with 'openssl rand -hex 32'")
+		}
 	}
 	return nil
 }

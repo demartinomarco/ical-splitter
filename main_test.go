@@ -9,10 +9,15 @@ import (
 	"marcodemartino.dev/ical-splitter/internal/icalsplit"
 )
 
+const (
+	testFirstSecret  = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testSecondSecret = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+)
+
 func TestHealthz(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	newHandler(&calendarCache{}).ServeHTTP(recorder, request)
+	newHandler(&calendarCache{}, testFirstSecret, testSecondSecret).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || recorder.Body.String() != "ok\n" {
 		t.Fatalf("response = %d %q, want 200 %q", recorder.Code, recorder.Body.String(), "ok\n")
 	}
@@ -21,7 +26,7 @@ func TestHealthz(t *testing.T) {
 func TestCalendarEndpointNotReady(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/shared.ics", nil)
-	newHandler(&calendarCache{}).ServeHTTP(recorder, request)
+	newHandler(&calendarCache{}, testFirstSecret, testSecondSecret).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}
@@ -37,7 +42,7 @@ func TestCalendarEndpointServesICS(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/shared.ics", nil)
-	newHandler(cache).ServeHTTP(recorder, request)
+	newHandler(cache, testFirstSecret, testSecondSecret).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
@@ -47,6 +52,56 @@ func TestCalendarEndpointServesICS(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "VERSION:2.0") {
 		t.Fatalf("unexpected calendar body: %q", recorder.Body.String())
+	}
+}
+
+func TestSecretCalendarEndpoints(t *testing.T) {
+	cache := &calendarCache{}
+	cache.store(icalsplit.Output{
+		FirstOnly:  []byte("FIRST CALENDAR"),
+		SecondOnly: []byte("SECOND CALENDAR"),
+		Shared:     []byte("SHARED CALENDAR"),
+	})
+	handler := newHandler(cache, testFirstSecret, testSecondSecret)
+
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/" + testFirstSecret + ".ics", want: "FIRST CALENDAR"},
+		{path: "/" + testSecondSecret + ".ics", want: "SECOND CALENDAR"},
+		{path: "/shared.ics", want: "SHARED CALENDAR"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			if recorder.Body.String() != test.want {
+				t.Fatalf("body = %q, want %q", recorder.Body.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestOldNamedEndpointsAreNotRegistered(t *testing.T) {
+	cache := &calendarCache{}
+	cache.store(icalsplit.Output{
+		FirstOnly: []byte("FIRST"), SecondOnly: []byte("SECOND"), Shared: []byte("SHARED"),
+	})
+	handler := newHandler(cache, testFirstSecret, testSecondSecret)
+
+	for _, path := range []string{"/first-only.ics", "/second-only.ics"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("path %q status = %d, want %d", path, recorder.Code, http.StatusNotFound)
+		}
 	}
 }
 
@@ -60,5 +115,42 @@ func TestValidateFeedURL(t *testing.T) {
 		if err := validateFeedURL(invalid); err == nil {
 			t.Errorf("validateFeedURL(%q) unexpectedly succeeded", invalid)
 		}
+	}
+}
+
+func TestValidateEndpointSecret(t *testing.T) {
+	for _, valid := range []string{
+		testFirstSecret,
+		testSecondSecret,
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwx",
+	} {
+		if err := validateEndpointSecret(valid); err != nil {
+			t.Errorf("validateEndpointSecret(%q): %v", valid, err)
+		}
+	}
+
+	for _, invalid := range []string{
+		"",
+		"too-short",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd/extra",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc?x",
+		strings.Repeat("a", 129),
+	} {
+		if err := validateEndpointSecret(invalid); err == nil {
+			t.Errorf("validateEndpointSecret(%q) unexpectedly succeeded", invalid)
+		}
+	}
+}
+
+func TestCalendarEndpointsRejectPost(t *testing.T) {
+	cache := &calendarCache{}
+	cache.store(icalsplit.Output{
+		FirstOnly: []byte("FIRST"), SecondOnly: []byte("SECOND"), Shared: []byte("SHARED"),
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/"+testFirstSecret+".ics", nil)
+	newHandler(cache, testFirstSecret, testSecondSecret).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
 	}
 }
