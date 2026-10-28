@@ -1,0 +1,15 @@
+services:
+  ical-splitter:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      ADDR: ":8080"
+      FIRST_ICAL_URL: ${FIRST_ICAL_URL:?Set FIRST_ICAL_URL in .env}
+      SECOND_ICAL_URL: ${SECOND_ICAL_URL:?Set SECOND_ICAL_URL in .env}
+      REFRESH_INTERVAL: ${REFRESH_INTERVAL:-10m}
+      FIRST_ENDPOINT_SECRET: ${FIRST_ENDPOINT_SECRET:?Set FIRST_ENDPOINT_SECRET in .env}
+      SECOND_ENDPOINT_SECRET: ${SECOND_ENDPOINT_SECRET:?Set SECOND_ENDPOINT_SECRET in .env}
+      SHARED_ENDPOINT_SECRET: ${SHARED_ENDPOINT_SECRET:?Set SHARED_ENDPOINT_SECRET in .env}
+    ports:
+      - "127.0.0.1:8080:8080"

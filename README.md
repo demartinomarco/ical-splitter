@@ -4,7 +4,7 @@ A small Go service that fetches two subscribed iCalendar feeds and exposes three
 
 - `/first-only.ics`: appointments present only in `FIRST_ICAL_URL`.
 - `/second-only.ics`: appointments present only in `SECOND_ICAL_URL`.
-- `/shared.ics`: appointments present in both feeds.
+- `/<SHARED_ENDPOINT_SECRET>.ics`: appointments present in both feeds (secret URL path).
 
 `/healthz` is a liveness endpoint. `/readyz` reports whether at least one successful refresh has completed.
 
@@ -47,10 +47,59 @@ docker compose logs -f
 docker compose ps
 curl -i http://127.0.0.1:8080/healthz
 curl -i http://127.0.0.1:8080/readyz
-curl -i http://127.0.0.1:8080/shared.ics
+curl -i http://127.0.0.1:8080/$(printf %s "$SHARED_ENDPOINT_SECRET").ics
 ```
 
 The container is published only on host loopback (`127.0.0.1:8080`). Put nginx in front of it or change the bind address intentionally if remote access is needed. Refreshing happens every 10 minutes by default; the first refresh is attempted immediately at startup.
+## Publish to GitHub Container Registry (GHCR)
+
+The workflow at `.github/workflows/publish-ghcr.yml` runs formatting checks, tests, `go vet`, and a build on pushes and pull requests. On pushes (and manual workflow runs), it builds and publishes a multi-platform image for `linux/amd64` and `linux/arm64` to `ghcr.io/<owner>/<repository>`.
+
+Image tags are generated automatically:
+
+- `latest` for the repository's default branch.
+- The branch name for branch pushes (for example, `main`).
+- The Git tag for tag pushes (for example, `v1.2.3`).
+- `sha-<short-commit>` for an immutable commit-specific reference.
+
+No manually configured registry password is needed in Actions; the workflow uses `GITHUB_TOKEN` with `packages: write`. The first successful publish creates the container package. Check the package's visibility in GitHub. For pulls without authentication, make the package public; for a private package, log in to GHCR on the deployment machine with a GitHub token that has `read:packages` permission.
+
+## Deploy the published image with Compose
+
+On the deployment machine, copy `.env.example` to `.env` and edit it:
+
+```bash
+cp .env.example .env
+$EDITOR .env
+```
+
+Set `GHCR_IMAGE` to the published package name, e.g. `ghcr.io/your-github-owner/your-repository:latest`, and set both iCal URLs. Keep `.env` private; do not commit it.
+
+For a public image, no registry login is required. For a private image, authenticate first:
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+Use a GitHub personal access token with `read:packages` for `GHCR_TOKEN`; do not put the token in the Compose file or `.env`.
+
+Start the published image (this deployment file does not build source locally):
+
+```bash
+docker compose -f compose.ghcr.yaml pull
+docker compose -f compose.ghcr.yaml up -d
+docker compose -f compose.ghcr.yaml ps
+docker compose -f compose.ghcr.yaml logs -f
+```
+
+To update to the newest image referenced by `GHCR_IMAGE`:
+
+```bash
+docker compose -f compose.ghcr.yaml pull && \
+  docker compose -f compose.ghcr.yaml up -d
+```
+
+The service binds to `127.0.0.1:8080` on the deployment host, ready for a host nginx reverse proxy. The Compose file passes the feed URLs to the container from `.env` and requires them to be set before starting.
 
 ## Tests
 
@@ -59,3 +108,17 @@ make check
 ```
 
 The tests cover shared events with different DTSTAMPs, first-only and second-only events, changed event content, folded lines, timezone merging, duplicate records within a feed, malformed calendars and HTTP endpoint behavior.
+
+
+## Secret calendar endpoint paths
+
+All three calendar routes use secret URL paths. Configure `FIRST_ENDPOINT_SECRET`, `SECOND_ENDPOINT_SECRET`, and `SHARED_ENDPOINT_SECRET` with different, randomly generated URL-safe tokens. The service exposes the first-only feed at `/<FIRST_ENDPOINT_SECRET>.ics`, the second-only feed at `/<SECOND_ENDPOINT_SECRET>.ics`, and the shared feed at `/<SHARED_ENDPOINT_SECRET>.ics`.
+
+Generate tokens with:
+
+```sh
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+The service requires each token to be 32-128 characters, using only letters, digits, `-` or `_`; all three values must differ. Do not commit real tokens to source control. Anyone who knows a secret endpoint URL can access that calendar, so use HTTPS and avoid logging full request paths.

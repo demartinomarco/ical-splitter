@@ -9,6 +9,7 @@ services:
       SECOND_ICAL_URL: ""
       FIRST_ENDPOINT_SECRET: ""
       SECOND_ENDPOINT_SECRET: ""
+      SHARED_ENDPOINT_SECRET: ""
       REFRESH_INTERVAL: "10m"
     ports:
       - "127.0.0.1:8080:8080"

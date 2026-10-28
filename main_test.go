@@ -12,12 +12,13 @@ import (
 const (
 	testFirstSecret  = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	testSecondSecret = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	testSharedSecret = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 )
 
 func TestHealthz(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	newHandler(&calendarCache{}, testFirstSecret, testSecondSecret).ServeHTTP(recorder, request)
+	newHandler(&calendarCache{}, testFirstSecret, testSecondSecret, testSharedSecret).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || recorder.Body.String() != "ok\n" {
 		t.Fatalf("response = %d %q, want 200 %q", recorder.Code, recorder.Body.String(), "ok\n")
 	}
@@ -25,8 +26,8 @@ func TestHealthz(t *testing.T) {
 
 func TestCalendarEndpointNotReady(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/shared.ics", nil)
-	newHandler(&calendarCache{}, testFirstSecret, testSecondSecret).ServeHTTP(recorder, request)
+	request := httptest.NewRequest(http.MethodGet, "/"+testSharedSecret+".ics", nil)
+	newHandler(&calendarCache{}, testFirstSecret, testSecondSecret, testSharedSecret).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
 	}
@@ -41,8 +42,8 @@ func TestCalendarEndpointServesICS(t *testing.T) {
 	})
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/shared.ics", nil)
-	newHandler(cache, testFirstSecret, testSecondSecret).ServeHTTP(recorder, request)
+	request := httptest.NewRequest(http.MethodGet, "/"+testSharedSecret+".ics", nil)
+	newHandler(cache, testFirstSecret, testSecondSecret, testSharedSecret).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
@@ -62,7 +63,7 @@ func TestSecretCalendarEndpoints(t *testing.T) {
 		SecondOnly: []byte("SECOND CALENDAR"),
 		Shared:     []byte("SHARED CALENDAR"),
 	})
-	handler := newHandler(cache, testFirstSecret, testSecondSecret)
+	handler := newHandler(cache, testFirstSecret, testSecondSecret, testSharedSecret)
 
 	tests := []struct {
 		path string
@@ -70,7 +71,7 @@ func TestSecretCalendarEndpoints(t *testing.T) {
 	}{
 		{path: "/" + testFirstSecret + ".ics", want: "FIRST CALENDAR"},
 		{path: "/" + testSecondSecret + ".ics", want: "SECOND CALENDAR"},
-		{path: "/shared.ics", want: "SHARED CALENDAR"},
+		{path: "/" + testSharedSecret + ".ics", want: "SHARED CALENDAR"},
 	}
 
 	for _, test := range tests {
@@ -93,9 +94,9 @@ func TestOldNamedEndpointsAreNotRegistered(t *testing.T) {
 	cache.store(icalsplit.Output{
 		FirstOnly: []byte("FIRST"), SecondOnly: []byte("SECOND"), Shared: []byte("SHARED"),
 	})
-	handler := newHandler(cache, testFirstSecret, testSecondSecret)
+	handler := newHandler(cache, testFirstSecret, testSecondSecret, testSharedSecret)
 
-	for _, path := range []string{"/first-only.ics", "/second-only.ics"} {
+	for _, path := range []string{"/first-only.ics", "/second-only.ics", "/shared.ics"} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		handler.ServeHTTP(recorder, request)
@@ -122,6 +123,7 @@ func TestValidateEndpointSecret(t *testing.T) {
 	for _, valid := range []string{
 		testFirstSecret,
 		testSecondSecret,
+		testSharedSecret,
 		"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwx",
 	} {
 		if err := validateEndpointSecret(valid); err != nil {
@@ -149,7 +151,7 @@ func TestCalendarEndpointsRejectPost(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/"+testFirstSecret+".ics", nil)
-	newHandler(cache, testFirstSecret, testSecondSecret).ServeHTTP(recorder, request)
+	newHandler(cache, testFirstSecret, testSecondSecret, testSharedSecret).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
 	}

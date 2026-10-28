@@ -124,7 +124,7 @@ func (c *calendarCache) refreshLoop(ctx context.Context, client *http.Client, fi
 	}
 }
 
-func newHandler(cache *calendarCache, firstEndpointSecret, secondEndpointSecret string) http.Handler {
+func newHandler(cache *calendarCache, firstEndpointSecret, secondEndpointSecret, sharedEndpointSecret string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -156,12 +156,12 @@ func newHandler(cache *calendarCache, firstEndpointSecret, secondEndpointSecret 
 		}
 	})
 
-	// The first two paths contain secret tokens supplied through environment
-	// variables. The stable shared endpoint remains /shared.ics.
+	// All three calendar paths contain secret tokens supplied through
+	// environment variables.
 	for path, name := range map[string]string{
 		"/" + firstEndpointSecret + ".ics":  "first-only",
 		"/" + secondEndpointSecret + ".ics": "second-only",
-		"/shared.ics":                       "shared",
+		"/" + sharedEndpointSecret + ".ics": "shared",
 	} {
 		calendarName := name
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
@@ -208,14 +208,18 @@ func run() error {
 
 	firstEndpointSecret := strings.TrimSpace(os.Getenv("FIRST_ENDPOINT_SECRET"))
 	secondEndpointSecret := strings.TrimSpace(os.Getenv("SECOND_ENDPOINT_SECRET"))
+	sharedEndpointSecret := strings.TrimSpace(os.Getenv("SHARED_ENDPOINT_SECRET"))
 	if err := validateEndpointSecret(firstEndpointSecret); err != nil {
 		return fmt.Errorf("FIRST_ENDPOINT_SECRET: %w", err)
 	}
 	if err := validateEndpointSecret(secondEndpointSecret); err != nil {
 		return fmt.Errorf("SECOND_ENDPOINT_SECRET: %w", err)
 	}
-	if firstEndpointSecret == secondEndpointSecret {
-		return errors.New("FIRST_ENDPOINT_SECRET and SECOND_ENDPOINT_SECRET must be different")
+	if err := validateEndpointSecret(sharedEndpointSecret); err != nil {
+		return fmt.Errorf("SHARED_ENDPOINT_SECRET: %w", err)
+	}
+	if firstEndpointSecret == secondEndpointSecret || firstEndpointSecret == sharedEndpointSecret || secondEndpointSecret == sharedEndpointSecret {
+		return errors.New("FIRST_ENDPOINT_SECRET, SECOND_ENDPOINT_SECRET, and SHARED_ENDPOINT_SECRET must all be different")
 	}
 
 	interval := 10 * time.Minute
@@ -239,7 +243,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           newHandler(cache, firstEndpointSecret, secondEndpointSecret),
+		Handler:           newHandler(cache, firstEndpointSecret, secondEndpointSecret, sharedEndpointSecret),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
