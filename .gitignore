@@ -1,3 +1,6 @@
 /dist/
+/coverage/
+coverage.out
+coverage.html
 .env
 *.ics

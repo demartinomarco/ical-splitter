@@ -108,4 +108,12 @@ go vet ./...
 go build ./...
 ```
 
+Generate a coverage profile, a per-function summary, and a browsable HTML report with:
+
+```sh
+make cover
+```
+
+This writes `coverage/coverage.out` and `coverage/coverage.html`; open the HTML file to see which statements were executed. Go's built-in coverage measures statement coverage, so uncovered branches inside a conditional usually appear as uncovered statements in that report. CI runs the same profile generation and prints the per-function summary.
+
 The tests cover shared events with different `DTSTAMP` values, first-only and second-only events, changed event content, folded lines, timezone merging, duplicate records within a feed, malformed calendars, and HTTP endpoint behavior.

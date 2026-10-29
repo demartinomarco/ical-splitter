@@ -22,8 +22,12 @@ func calendar(components ...string) []byte {
 }
 
 func event(uid, summary, dtstamp, extra string) string {
-	return fmt.Sprintf("BEGIN:VEVENT\nUID:%s\nSUMMARY:%s\nDTSTART:20261027T140000Z\nDTEND:20261027T153000Z\nDTSTAMP:%s\n%sEND:VEVENT\n",
-		uid, summary, dtstamp, extra)
+	stamp := ""
+	if dtstamp != "" {
+		stamp = fmt.Sprintf("DTSTAMP:%s\n", dtstamp)
+	}
+	return fmt.Sprintf("BEGIN:VEVENT\nUID:%s\nSUMMARY:%s\nDTSTART:20261027T140000Z\nDTEND:20261027T153000Z\n%s%sEND:VEVENT\n",
+		uid, summary, stamp, extra)
 }
 
 func eventUIDs(t *testing.T, ics []byte) []string {
@@ -189,5 +193,151 @@ func assertUIDs(t *testing.T, got, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("UIDs = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestSplitRejectsMalformedFirstCalendar(t *testing.T) {
+	if _, err := Split([]byte(""), calendar(event("a@example.test", "A", "20261028T210000", ""))); err == nil {
+		t.Error("Split unexpectedly accepted a malformed first calendar")
+	}
+}
+
+func TestSplitRejectsTrailingContentAfterVCalendar(t *testing.T) {
+	first := calendar(event("a@example.test", "A", "20261028T210000", ""))
+	second := []byte("BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\nBEGIN:VEVENT\nUID:x\nEND:VEVENT\n")
+	if _, err := Split(first, second); err == nil {
+		t.Error("Split unexpectedly accepted content after END:VCALENDAR")
+	}
+}
+
+func TestSplitRejectsFoldedFirstLine(t *testing.T) {
+	first := calendar(event("a@example.test", "A", "20261028T210000", ""))
+	second := []byte(" BEGIN:VCALENDAR\nEND:VCALENDAR\n")
+	if _, err := Split(first, second); err == nil {
+		t.Error("Split unexpectedly accepted a calendar starting with a folded line")
+	}
+}
+
+func TestSplitRejectsStructurallyMalformedComponents(t *testing.T) {
+	valid := calendar(event("a@example.test", "A", "20261028T210000", ""))
+	tests := []struct {
+		name    string
+		invalid []byte
+		wantErr string
+	}{
+		{
+			name:    "first line has no colon",
+			invalid: []byte("NO_COLON_HERE\nNOT_CALENDAR\n"),
+			wantErr: "malformed content line",
+		},
+		{
+			name:    "first line is not BEGIN",
+			invalid: []byte("X-PROP:1\nBEGIN:VCALENDAR\nEND:VCALENDAR\n"),
+			wantErr: "expected BEGIN",
+		},
+		{
+			name:    "empty component name",
+			invalid: []byte("BEGIN:\r\nEND:VCALENDAR\r\n"),
+			wantErr: "empty component name",
+		},
+		{
+			name:    "nested component parse error",
+			invalid: []byte("BEGIN:VCALENDAR\nBEGIN:VEVENT\nBEGIN:VALARM\nEND:VEVENT\nEND:VCALENDAR\n"),
+			wantErr: "END:VEVENT does not match BEGIN:VALARM",
+		},
+		{
+			name:    "content line without colon",
+			invalid: []byte("BEGIN:VCALENDAR\nNO_COLON\nEND:VCALENDAR\n"),
+			wantErr: "malformed content line",
+		},
+		{
+			name:    "empty property name",
+			invalid: []byte("BEGIN:VCALENDAR\n:orphan\nEND:VCALENDAR\n"),
+			wantErr: "empty property name",
+		},
+		{
+			name:    "component without matching END",
+			invalid: []byte("BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:x\n"),
+			wantErr: "has no matching END:VEVENT",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Split(valid, test.invalid)
+			if err == nil {
+				t.Fatalf("Split unexpectedly accepted %q", test.invalid)
+			}
+			if !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %q, want it to contain %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestSplitMatchesEventsWithNestedComponents(t *testing.T) {
+	alarm := "BEGIN:VALARM\nACTION:DISPLAY\nDESCRIPTION:Reminder\nEND:VALARM\n"
+	shared := event("alarm@example.test", "A", "20261028T210000", alarm)
+	got, err := Split(calendar(shared), calendar(shared))
+	if err != nil {
+		t.Fatalf("Split returned error: %v", err)
+	}
+	assertUIDs(t, eventUIDs(t, got.Shared), []string{"alarm@example.test"})
+	assertUIDs(t, eventUIDs(t, got.FirstOnly), nil)
+	assertUIDs(t, eventUIDs(t, got.SecondOnly), nil)
+	if !strings.Contains(string(got.Shared), "ACTION:DISPLAY") {
+		t.Error("shared output lost the nested VALARM component")
+	}
+}
+
+func TestSplitAddsCalendarDefaults(t *testing.T) {
+	bare := []byte("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:nodefaults@example.test\r\nDTSTART:20261027T140000Z\r\nDTEND:20261027T153000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+	got, err := Split(bare, bare)
+	if err != nil {
+		t.Fatalf("Split returned error: %v", err)
+	}
+	assertUIDs(t, eventUIDs(t, got.Shared), []string{"nodefaults@example.test"})
+	for name, marker := range map[string]string{
+		"PRODID":  "PRODID:-//ical-splitter//EN\r\n",
+		"VERSION": "VERSION:2.0\r\n",
+	} {
+		if !strings.Contains(string(got.Shared), marker) {
+			t.Errorf("shared output is missing the default %s property", name)
+		}
+	}
+}
+
+func TestSplitMatchesEventsWithoutDTStamp(t *testing.T) {
+	shared := event("nodt@example.test", "No stamp", "", "")
+	got, err := Split(calendar(shared), calendar(shared))
+	if err != nil {
+		t.Fatalf("Split returned error: %v", err)
+	}
+	assertUIDs(t, eventUIDs(t, got.Shared), []string{"nodt@example.test"})
+}
+
+func TestSplitMergesTimezonesWithoutTZID(t *testing.T) {
+	tz := "BEGIN:VTIMEZONE\nX-LIC-LOCATION:Europe/Berlin\nEND:VTIMEZONE\n"
+	first := calendar(tz, event("a@example.test", "A", "20261028T210000", ""))
+	second := calendar(event("b@example.test", "B", "20261028T220000", ""))
+
+	got, err := Split(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got.FirstOnly), "X-LIC-LOCATION:Europe/Berlin") {
+		t.Error("first-only output is missing the VTIMEZONE that has no TZID")
+	}
+}
+
+func TestSplitMatchesEventsWithQuotedAndEscapedHeaderParts(t *testing.T) {
+	tricky := event("tricky@example.test", "Tricky", "20261028T210000",
+		`X-TRICKY;;CN="a;b";ROLE;NOTE="x\;y":tail`+"\n")
+	got, err := Split(calendar(tricky), calendar(tricky))
+	if err != nil {
+		t.Fatalf("Split returned error: %v", err)
+	}
+	assertUIDs(t, eventUIDs(t, got.Shared), []string{"tricky@example.test"})
+	if !strings.Contains(string(got.Shared), `NOTE="x\;y"`) {
+		t.Error("shared output lost the tricky property's original line")
 	}
 }
